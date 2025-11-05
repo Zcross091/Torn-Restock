@@ -1,87 +1,143 @@
 import sys, types
-
-# --- Disable Discord voice modules (avoids audioop crash on Python 3.13) ---
-for mod_name in ["discord.voice_client", "discord.player"]:
-    dummy = types.ModuleType(mod_name)
-    sys.modules[mod_name] = dummy
-# ---------------------------------------------------------------------------
-
 import discord
 from discord.ext import commands
 import os
 from threading import Thread
 from flask import Flask
+import requests
+import json
+
+# --- Your Torn API Key ---
+TORN_API_KEY = "1Wu5Br5fy7gbb7gU"
+
+# --- Python 3.13 Voice Module Fix ---
+try:
+    # Mocks for discord.py internal imports
+    class VoiceProtocol(object): pass
+    class VoiceClient(object): pass
+    sys.modules["discord.player"] = types.ModuleType("discord.player")
+    voice_client = types.ModuleType("discord.voice_client")
+    voice_client.VoiceClient = VoiceClient
+    voice_client.VoiceProtocol = VoiceProtocol
+    sys.modules["discord.voice_client"] = voice_client
+except ImportError:
+    pass
+# ---------------------------------------------------------------------------
+
 
 # --- Web server for Render keep-alive ---
 app = Flask(__name__)
-
 @app.route("/")
 def home():
     return "✅ Torn City Bot is alive!"
-
 def run_web():
-    app.run(host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 # ---------------------------------------------------------------------------
 
-# --- Bot logic ---
-COUNTRY_ITEMS = {
-    "Argentina": ["Argentine Flag", "Panda Plushie"],
-    "Cayman Islands": ["Red Fox Plushie"],
-    "Hawaii": ["Sea Turtle Plushie"],
-    "Mexico": ["Jaguar Plushie"],
-    "Switzerland": ["Swiss Chocolate"],
-    "United Kingdom": ["English Tea", "Daisy", "Teddy Bear"],
-    "China": ["Chinese Dragon Plushie"],
-    "Japan": ["Geisha Doll"],
-    "Canada": ["Polar Bear Plushie"],
-    "Cuba": ["Cuban Cigars"],
-    "Netherlands": ["Tulip", "Cannabis"],
-}
 
+# --- Fixed Item Data (Needed for Vendor Buy Price) ---
+# Structure: [Item ID, Item Name, Vendor Buy Price, Country, Category]
+FOREIGN_ITEMS_DATA = [
+    # Xanax is the biggest profit item, always include its ID
+    [260, "Xanax", 7600, "South Africa", "Drug"], 
+    # High-Profit Flowers/Plushies (Under 3h Airstrip Travel)
+    [267, "Camel Plushie", 14000, "United Arab Emirates", "Plushie"],
+    [273, "Tribulus Omanense", 6000, "United Arab Emirates", "Flower"],
+    [270, "Peony", 5000, "China", "Flower"],
+    [276, "Chinese Dragon Plushie", 400, "China", "Plushie"],
+    [266, "Cherry Blossom", 500, "Japan", "Flower"],
+    [277, "Panda Plushie", 400, "Argentina", "Plushie"],
+    [271, "African Violet", 2000, "South Africa", "Flower"],
+    [278, "Lion Plushie", 400, "South Africa", "Plushie"],
+    # Lower-Tier but Fast/Reliable
+    [269, "Jaguar Plushie", 10000, "Mexico", "Plushie"],
+    [264, "Banana Orchid", 4000, "Cayman Islands", "Flower"],
+    [265, "Crocus", 600, "Canada", "Flower"],
+    [275, "Polar Bear Plushie", 500, "Canada", "Plushie"],
+    [272, "Edelweiss", 900, "Switzerland", "Flower"],
+    [261, "Orchid", 700, "Hawaii", "Flower"],
+    [274, "Sea Turtle Plushie", 500, "Hawaii", "Plushie"],
+    # Include other high GPI items from the 3hr zone if desired, but this covers the best.
+]
+
+# --- Bot Commands ---
 intents = discord.Intents.default()
 intents.message_content = True
-
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
 
-@bot.command()
-async def plushies(ctx):
-    msg = "**🧸 Plushies by Country**\n\n"
-    for c, items in COUNTRY_ITEMS.items():
-        p = [i for i in items if "Plushie" in i]
-        if p:
-            msg += f"**{c}:** {', '.join(p)}\n"
-    await ctx.send(msg)
+@bot.command(name='flyprofits')
+async def fly_profits(ctx):
+    """Fetches and displays the top 5 most profitable foreign items based on live market price."""
+    
+    await ctx.send("✈️ **Fetching Live Profit Data...** This may take a moment.")
+    
+    profit_data = []
+    
+    # --- 1. Fetch Item Market Data for ALL relevant foreign items ---
+    item_ids = [str(item[0]) for item in FOREIGN_ITEMS_DATA]
+    
+    try:
+        # Request data for all item IDs in one API call
+        url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status() # Raise exception for bad status codes
+        live_prices = response.json()
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Torn API Error: {e}")
+        await ctx.send(f"❌ **API Error:** Could not connect to Torn API or key invalid. Check logs for details.")
+        return
+    
+    # --- 2. Calculate Gross Profit for each item ---
+    for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
+        item_id_str = str(item_id)
+        
+        # Ensure item exists and has market listings
+        if item_id_str not in live_prices or 'itemmarket' not in live_prices[item_id_str] or not live_prices[item_id_str]['itemmarket']:
+            # If no listings, we can't calculate a profit
+            continue 
+            
+        # The lowest price is the highest selling price you can achieve quickly
+        market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
+        
+        # Profit must be based on a high-value item, so we use a minimum threshold
+        gross_profit = market_sell_price - vendor_buy
+        
+        # --- Apply the High-Profit Threshold Filter ---
+        # Only list items where the profit is > $15,000 to ensure worthwhile trips 
+        # (This is just an example threshold, adjust it as you use the bot)
+        if gross_profit >= 15000:
+            profit_data.append({
+                "name": name,
+                "country": country,
+                "vendor_buy": vendor_buy,
+                "market_sell": market_sell_price,
+                "profit": gross_profit,
+                "category": category
+            })
+            
+    # --- 3. Sort by Profit and Display ---
+    profit_data.sort(key=lambda x: x['profit'], reverse=True)
+    
+    if not profit_data:
+        await ctx.send("No items found with a Gross Profit over $15,000 at this time. Market might be low.")
+        return
 
-@bot.command()
-async def flowers(ctx):
-    msg = "**🌸 Flowers by Country**\n\n"
-    for c, items in COUNTRY_ITEMS.items():
-        f = [i for i in items if any(x in i for x in ["Flower", "Tulip", "Daisy"])]
-        if f:
-            msg += f"**{c}:** {', '.join(f)}\n"
-    await ctx.send(msg)
+    msg = "💰 **Top 5 Live High-Profit Foreign Items (Gross Profit > $15,000)**\n"
+    msg += "*(Based on lowest price in Item Market)*\n\n"
+    
+    for i, item in enumerate(profit_data[:5]):
+        msg += (
+            f"**{i+1}. {item['name']}** ({item['country']})\n"
+            f"> Buy: **${item['vendor_buy']:,}** | Sell: **${item['market_sell']:,}** | **LIVE PROFIT: ${item['profit']:,}**\n"
+        )
 
-@bot.command()
-async def drugs(ctx):
-    msg = "**💊 Drugs by Country**\n\n"
-    for c, items in COUNTRY_ITEMS.items():
-        d = [i for i in items if any(x in i for x in ["Cannabis", "Cigar"])]
-        if d:
-            msg += f"**{c}:** {', '.join(d)}\n"
     await ctx.send(msg)
-
-@bot.command()
-async def country(ctx, *, name):
-    name = name.title()
-    if name in COUNTRY_ITEMS:
-        await ctx.send(f"**{name} Items:** {', '.join(COUNTRY_ITEMS[name])}")
-    else:
-        await ctx.send("❌ Country not found.")
-# ---------------------------------------------------------------------------
 
 # --- Start bot and web server ---
 if __name__ == "__main__":
