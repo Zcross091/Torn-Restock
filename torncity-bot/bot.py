@@ -1,28 +1,44 @@
 import sys, types
-import discord
-from discord.ext import commands
 import os
 from threading import Thread
 from flask import Flask
 import requests
 import json
+import discord
+from discord.ext import commands
 
-# --- Your Torn API Key ---
+# --- TORN API Key ---
 TORN_API_KEY = "1Wu5Br5fy7gbb7gU"
 
-# --- Python 3.13 Voice Module Fix ---
+# =========================================================================
+# === FIX: Python 3.13 & Deployment Audio/Voice Module Mocking (Must be FIRST) ===
+# =========================================================================
+
+# 1. Mock 'audioop' to prevent ModuleNotFoundError, as it's the root dependency issue
+# This ensures that when discord.py tries to import audioop, it finds an empty module instead of crashing.
 try:
-    # Mocks for discord.py internal imports
+    if 'audioop' not in sys.modules:
+        sys.modules['audioop'] = types.ModuleType('audioop')
+except Exception as e:
+    print(f"Failed to mock audioop: {e}")
+
+# 2. Mock Voice/Player modules to prevent subsequent failures inside discord.py
+try:
     class VoiceProtocol(object): pass
     class VoiceClient(object): pass
+    
+    # Mock discord.player
     sys.modules["discord.player"] = types.ModuleType("discord.player")
+    
+    # Mock discord.voice_client, providing the classes the library needs
     voice_client = types.ModuleType("discord.voice_client")
     voice_client.VoiceClient = VoiceClient
     voice_client.VoiceProtocol = VoiceProtocol
     sys.modules["discord.voice_client"] = voice_client
-except ImportError:
-    pass
-# ---------------------------------------------------------------------------
+    
+except Exception as e:
+    print(f"Voice module mocking failed: {e}")
+# =========================================================================
 
 
 # --- Web server for Render keep-alive ---
@@ -32,6 +48,7 @@ def home():
     return "✅ Torn City Bot is alive!"
 def run_web():
     port = int(os.environ.get("PORT", 8080))
+    # Note: Flask runs in a thread here, common for keeping a Render service alive
     app.run(host="0.0.0.0", port=port)
 # ---------------------------------------------------------------------------
 
@@ -39,9 +56,7 @@ def run_web():
 # --- Fixed Item Data (Needed for Vendor Buy Price) ---
 # Structure: [Item ID, Item Name, Vendor Buy Price, Country, Category]
 FOREIGN_ITEMS_DATA = [
-    # Xanax is the biggest profit item, always include its ID
     [260, "Xanax", 7600, "South Africa", "Drug"], 
-    # High-Profit Flowers/Plushies (Under 3h Airstrip Travel)
     [267, "Camel Plushie", 14000, "United Arab Emirates", "Plushie"],
     [273, "Tribulus Omanense", 6000, "United Arab Emirates", "Flower"],
     [270, "Peony", 5000, "China", "Flower"],
@@ -50,7 +65,6 @@ FOREIGN_ITEMS_DATA = [
     [277, "Panda Plushie", 400, "Argentina", "Plushie"],
     [271, "African Violet", 2000, "South Africa", "Flower"],
     [278, "Lion Plushie", 400, "South Africa", "Plushie"],
-    # Lower-Tier but Fast/Reliable
     [269, "Jaguar Plushie", 10000, "Mexico", "Plushie"],
     [264, "Banana Orchid", 4000, "Cayman Islands", "Flower"],
     [265, "Crocus", 600, "Canada", "Flower"],
@@ -58,7 +72,6 @@ FOREIGN_ITEMS_DATA = [
     [272, "Edelweiss", 900, "Switzerland", "Flower"],
     [261, "Orchid", 700, "Hawaii", "Flower"],
     [274, "Sea Turtle Plushie", 500, "Hawaii", "Plushie"],
-    # Include other high GPI items from the 3hr zone if desired, but this covers the best.
 ]
 
 # --- Bot Commands ---
@@ -77,15 +90,12 @@ async def fly_profits(ctx):
     await ctx.send("✈️ **Fetching Live Profit Data...** This may take a moment.")
     
     profit_data = []
-    
-    # --- 1. Fetch Item Market Data for ALL relevant foreign items ---
     item_ids = [str(item[0]) for item in FOREIGN_ITEMS_DATA]
     
     try:
-        # Request data for all item IDs in one API call
         url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
         response = requests.get(url, timeout=10)
-        response.raise_for_status() # Raise exception for bad status codes
+        response.raise_for_status() 
         live_prices = response.json()
         
     except requests.exceptions.RequestException as e:
@@ -97,20 +107,14 @@ async def fly_profits(ctx):
     for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
         item_id_str = str(item_id)
         
-        # Ensure item exists and has market listings
         if item_id_str not in live_prices or 'itemmarket' not in live_prices[item_id_str] or not live_prices[item_id_str]['itemmarket']:
-            # If no listings, we can't calculate a profit
             continue 
             
-        # The lowest price is the highest selling price you can achieve quickly
         market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
-        
-        # Profit must be based on a high-value item, so we use a minimum threshold
         gross_profit = market_sell_price - vendor_buy
         
         # --- Apply the High-Profit Threshold Filter ---
         # Only list items where the profit is > $15,000 to ensure worthwhile trips 
-        # (This is just an example threshold, adjust it as you use the bot)
         if gross_profit >= 15000:
             profit_data.append({
                 "name": name,
