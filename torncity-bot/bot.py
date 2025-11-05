@@ -1,12 +1,10 @@
-import sys
-import types
+import sys, types
 
-# ---- Patch discord.voice_client before importing discord ----
-voice_client = types.ModuleType("discord.voice_client")
-voice_client.VoiceClient = None
-voice_client.VoiceProtocol = None
-sys.modules["discord.voice_client"] = voice_client
-# --------------------------------------------------------------
+# --- Disable Discord voice modules (avoids audioop crash on Python 3.13) ---
+for mod_name in ["discord.voice_client", "discord.player"]:
+    dummy = types.ModuleType(mod_name)
+    sys.modules[mod_name] = dummy
+# ---------------------------------------------------------------------------
 
 import discord
 from discord.ext import commands
@@ -14,17 +12,18 @@ import os
 from threading import Thread
 from flask import Flask
 
-# Web keepalive
+# --- Web server for Render keep-alive ---
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Torn City bot is alive"
+    return "✅ Torn City Bot is alive!"
 
 def run_web():
     app.run(host="0.0.0.0", port=8080)
+# ---------------------------------------------------------------------------
 
-# Data
+# --- Bot logic ---
 COUNTRY_ITEMS = {
     "Argentina": ["Argentine Flag", "Panda Plushie"],
     "Cayman Islands": ["Red Fox Plushie"],
@@ -41,6 +40,7 @@ COUNTRY_ITEMS = {
 
 intents = discord.Intents.default()
 intents.message_content = True
+
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 @bot.event
@@ -51,27 +51,27 @@ async def on_ready():
 async def plushies(ctx):
     msg = "**🧸 Plushies by Country**\n\n"
     for c, items in COUNTRY_ITEMS.items():
-        plushies = [i for i in items if "Plushie" in i]
-        if plushies:
-            msg += f"**{c}:** {', '.join(plushies)}\n"
+        p = [i for i in items if "Plushie" in i]
+        if p:
+            msg += f"**{c}:** {', '.join(p)}\n"
     await ctx.send(msg)
 
 @bot.command()
 async def flowers(ctx):
     msg = "**🌸 Flowers by Country**\n\n"
     for c, items in COUNTRY_ITEMS.items():
-        flowers = [i for i in items if "Flower" in i or "Tulip" in i or "Daisy" in i]
-        if flowers:
-            msg += f"**{c}:** {', '.join(flowers)}\n"
+        f = [i for i in items if any(x in i for x in ["Flower", "Tulip", "Daisy"])]
+        if f:
+            msg += f"**{c}:** {', '.join(f)}\n"
     await ctx.send(msg)
 
 @bot.command()
 async def drugs(ctx):
     msg = "**💊 Drugs by Country**\n\n"
     for c, items in COUNTRY_ITEMS.items():
-        drugs = [i for i in items if "Cannabis" in i or "Cigar" in i]
-        if drugs:
-            msg += f"**{c}:** {', '.join(drugs)}\n"
+        d = [i for i in items if any(x in i for x in ["Cannabis", "Cigar"])]
+        if d:
+            msg += f"**{c}:** {', '.join(d)}\n"
     await ctx.send(msg)
 
 @bot.command()
@@ -81,8 +81,9 @@ async def country(ctx, *, name):
         await ctx.send(f"**{name} Items:** {', '.join(COUNTRY_ITEMS[name])}")
     else:
         await ctx.send("❌ Country not found.")
+# ---------------------------------------------------------------------------
 
+# --- Start bot and web server ---
 if __name__ == "__main__":
     Thread(target=run_web).start()
     bot.run(os.getenv("DISCORD_TOKEN"))
-
