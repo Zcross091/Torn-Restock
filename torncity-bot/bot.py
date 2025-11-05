@@ -1,3 +1,10 @@
+import sys
+
+# 🚫 Block voice/audio features before discord.py loads
+sys.modules['audioop'] = None
+sys.modules['discord.voice_client'] = None
+sys.modules['discord.player'] = None
+
 import discord
 discord.VoiceClient = None
 
@@ -6,6 +13,7 @@ import os
 from threading import Thread
 from flask import Flask
 
+# 🌐 Simple Flask web server (for Render keep-alive)
 app = Flask(__name__)
 
 @app.route("/")
@@ -15,6 +23,7 @@ def home():
 def run_web():
     app.run(host="0.0.0.0", port=8080)
 
+# 🎯 Torn City item data
 COUNTRY_ITEMS = {
     "Argentina": ["Argentine Flag", "Panda Plushie"],
     "Cayman Islands": ["Red Fox Plushie"],
@@ -29,6 +38,7 @@ COUNTRY_ITEMS = {
     "Netherlands": ["Tulip", "Cannabis"],
 }
 
+# 🤖 Discord bot setup
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
