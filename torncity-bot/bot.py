@@ -11,33 +11,19 @@ from discord.ext import commands
 TORN_API_KEY = "1Wu5Br5fy7gbb7gU"
 
 # =========================================================================
-# === FIX: Python 3.13 & Deployment Audio/Voice Module Mocking (Must be FIRST) ===
-# =========================================================================
-
-# 1. Mock 'audioop' to prevent ModuleNotFoundError, as it's the root dependency issue
-# This ensures that when discord.py tries to import audioop, it finds an empty module instead of crashing.
-try:
-    if 'audioop' not in sys.modules:
-        sys.modules['audioop'] = types.ModuleType('audioop')
-except Exception as e:
-    print(f"Failed to mock audioop: {e}")
-
-# 2. Mock Voice/Player modules to prevent subsequent failures inside discord.py
+# === FIX: Voice Module Mocking (Now redundant on Python 3.11/3.12, but safe to keep) ===
+# We keep this block for robustness, although the Python version change should have fixed it.
 try:
     class VoiceProtocol(object): pass
     class VoiceClient(object): pass
-    
-    # Mock discord.player
     sys.modules["discord.player"] = types.ModuleType("discord.player")
-    
-    # Mock discord.voice_client, providing the classes the library needs
+    sys.modules['audioop'] = types.ModuleType('audioop') 
     voice_client = types.ModuleType("discord.voice_client")
     voice_client.VoiceClient = VoiceClient
     voice_client.VoiceProtocol = VoiceProtocol
     sys.modules["discord.voice_client"] = voice_client
-    
-except Exception as e:
-    print(f"Voice module mocking failed: {e}")
+except Exception:
+    pass
 # =========================================================================
 
 
@@ -47,9 +33,9 @@ app = Flask(__name__)
 def home():
     return "✅ Torn City Bot is alive!"
 def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    # Note: Flask runs in a thread here, common for keeping a Render service alive
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000)) # Using 10000 as a standard Render port now
+    # Ensure debug=False for production
+    app.run(host="0.0.0.0", port=port, debug=False) 
 # ---------------------------------------------------------------------------
 
 
@@ -75,6 +61,7 @@ FOREIGN_ITEMS_DATA = [
 ]
 
 # --- Bot Commands ---
+# NOTE: The command prefix is set to '/'
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
@@ -100,10 +87,10 @@ async def fly_profits(ctx):
         
     except requests.exceptions.RequestException as e:
         print(f"Torn API Error: {e}")
-        await ctx.send(f"❌ **API Error:** Could not connect to Torn API or key invalid. Check logs for details.")
+        await ctx.send(f"❌ **API Error:** Could not connect to Torn API or key invalid: `{e}`")
         return
     
-    # --- 2. Calculate Gross Profit for each item ---
+    # --- Calculate Gross Profit for each item ---
     for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
         item_id_str = str(item_id)
         
@@ -113,8 +100,7 @@ async def fly_profits(ctx):
         market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
         gross_profit = market_sell_price - vendor_buy
         
-        # --- Apply the High-Profit Threshold Filter ---
-        # Only list items where the profit is > $15,000 to ensure worthwhile trips 
+        # --- Apply the High-Profit Threshold Filter (>$15,000) ---
         if gross_profit >= 15000:
             profit_data.append({
                 "name": name,
@@ -125,14 +111,14 @@ async def fly_profits(ctx):
                 "category": category
             })
             
-    # --- 3. Sort by Profit and Display ---
+    # --- Sort by Profit and Display ---
     profit_data.sort(key=lambda x: x['profit'], reverse=True)
     
     if not profit_data:
         await ctx.send("No items found with a Gross Profit over $15,000 at this time. Market might be low.")
         return
 
-    msg = "💰 **Top 5 Live High-Profit Foreign Items (Gross Profit > $15,000)**\n"
+    msg = "💰 **Top 5 Live High-Profit Foreign Items (Gross Profit > $15K)**\n"
     msg += "*(Based on lowest price in Item Market)*\n\n"
     
     for i, item in enumerate(profit_data[:5]):
