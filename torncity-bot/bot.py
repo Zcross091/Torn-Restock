@@ -1,6 +1,17 @@
 import discord
 from discord.ext import commands
 import os
+from threading import Thread
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Torn City bot is alive"
+
+def run_web():
+    app.run(host="0.0.0.0", port=8080)
 
 COUNTRY_ITEMS = {
     "Argentina": ["Argentine Flag", "Panda Plushie"],
@@ -27,39 +38,38 @@ async def on_ready():
 @bot.command()
 async def plushies(ctx):
     msg = "**🧸 Plushies by Country**\n\n"
-    for country, items in COUNTRY_ITEMS.items():
-        plushies = [i for i in items if "Plushie" in i]
-        if plushies:
-            msg += f"**{country}:** {', '.join(plushies)}\n"
+    for c, items in COUNTRY_ITEMS.items():
+        p = [i for i in items if "Plushie" in i]
+        if p:
+            msg += f"**{c}:** {', '.join(p)}\n"
     await ctx.send(msg)
 
 @bot.command()
 async def flowers(ctx):
     msg = "**🌸 Flowers by Country**\n\n"
-    for country, items in COUNTRY_ITEMS.items():
-        flowers = [i for i in items if "Flower" in i or "Tulip" in i or "Daisy" in i]
-        if flowers:
-            msg += f"**{country}:** {', '.join(flowers)}\n"
+    for c, items in COUNTRY_ITEMS.items():
+        f = [i for i in items if "Flower" in i or "Tulip" in i or "Daisy" in i]
+        if f:
+            msg += f"**{c}:** {', '.join(f)}\n"
     await ctx.send(msg)
 
 @bot.command()
 async def drugs(ctx):
     msg = "**💊 Drugs by Country**\n\n"
-    for country, items in COUNTRY_ITEMS.items():
-        drugs = [i for i in items if "Cannabis" in i or "Cigar" in i]
-        if drugs:
-            msg += f"**{country}:** {', '.join(drugs)}\n"
+    for c, items in COUNTRY_ITEMS.items():
+        d = [i for i in items if "Cannabis" in i or "Cigar" in i]
+        if d:
+            msg += f"**{c}:** {', '.join(d)}\n"
     await ctx.send(msg)
 
 @bot.command()
 async def country(ctx, *, name):
     name = name.title()
     if name in COUNTRY_ITEMS:
-        items = ", ".join(COUNTRY_ITEMS[name])
-        await ctx.send(f"**{name} Items:** {items}")
+        await ctx.send(f"**{name} Items:** {', '.join(COUNTRY_ITEMS[name])}")
     else:
-        await ctx.send("❌ Country not found. Try again!")
+        await ctx.send("❌ Country not found.")
 
-bot.run(os.getenv("DISCORD_TOKEN"))
-
-
+if __name__ == "__main__":
+    Thread(target=run_web).start()
+    bot.run(os.getenv("DISCORD_TOKEN"))
