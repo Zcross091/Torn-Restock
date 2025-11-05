@@ -3,6 +3,7 @@ from discord.ext import commands
 import os
 from threading import Thread
 from flask import Flask
+discord.VoiceClient = None
 
 app = Flask(__name__)
 
@@ -73,3 +74,4 @@ async def country(ctx, *, name):
 if __name__ == "__main__":
     Thread(target=run_web).start()
     bot.run(os.getenv("DISCORD_TOKEN"))
+
