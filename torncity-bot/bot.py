@@ -1,9 +1,10 @@
 import sys
+import types
 
-# 🚫 Block voice/audio features before discord.py loads
-sys.modules['audioop'] = None
-sys.modules['discord.voice_client'] = None
-sys.modules['discord.player'] = None
+# 🚫 Block voice/audio features with dummy modules (safe for Python 3.13)
+sys.modules['audioop'] = types.ModuleType('audioop')
+sys.modules['discord.voice_client'] = types.ModuleType('discord.voice_client')
+sys.modules['discord.player'] = types.ModuleType('discord.player')
 
 import discord
 discord.VoiceClient = None
@@ -13,7 +14,7 @@ import os
 from threading import Thread
 from flask import Flask
 
-# 🌐 Simple Flask web server (for Render keep-alive)
+# 🌐 Flask web server for keep-alive
 app = Flask(__name__)
 
 @app.route("/")
