@@ -60,5 +60,6 @@ async def country(ctx, *, name):
     else:
         await ctx.send("❌ Country not found. Try again!")
 
-bot.run(os.getenv("MTM5OTY2NzExNjAyNTcxMjY3MA.GYCVtj.3rf3KS3EZEXwJ8nGXluGVBos3gpGWQLEr0d88A"))
+bot.run(os.getenv("DISCORD_TOKEN"))
+
 
