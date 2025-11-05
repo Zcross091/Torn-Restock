@@ -75,6 +75,3 @@ async def country(ctx, *, name):
 if __name__ == "__main__":
     Thread(target=run_web).start()
     bot.run(os.getenv("DISCORD_TOKEN"))
-
-
-
