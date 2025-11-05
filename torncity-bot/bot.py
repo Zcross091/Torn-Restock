@@ -1,22 +1,12 @@
 import sys
 import types
 
-# --- Patch out audio and voice modules before importing discord ---
-fake_audioop = types.ModuleType("audioop")
-sys.modules["audioop"] = fake_audioop
-
-fake_voice_client = types.ModuleType("discord.voice_client")
-fake_player = types.ModuleType("discord.player")
-
-# Create dummy classes so discord.abc doesn't fail when referencing them
-fake_voice_client.VoiceClient = None
-fake_voice_client.VoiceProtocol = None
-fake_player.AudioPlayer = None
-fake_player.AudioSource = None
-
-sys.modules["discord.voice_client"] = fake_voice_client
-sys.modules["discord.player"] = fake_player
-# -----------------------------------------------------------------
+# ---- Patch discord.voice_client before importing discord ----
+voice_client = types.ModuleType("discord.voice_client")
+voice_client.VoiceClient = None
+voice_client.VoiceProtocol = None
+sys.modules["discord.voice_client"] = voice_client
+# --------------------------------------------------------------
 
 import discord
 from discord.ext import commands
@@ -95,3 +85,4 @@ async def country(ctx, *, name):
 if __name__ == "__main__":
     Thread(target=run_web).start()
     bot.run(os.getenv("DISCORD_TOKEN"))
+
