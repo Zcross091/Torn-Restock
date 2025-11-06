@@ -6,10 +6,9 @@ import requests
 import json
 import discord
 from discord.ext import commands
-from discord import app_commands 
+from discord import app_commands # Import for app commands
 
 # --- TORN API Key ---
-# KEEP THIS CONFIDENTIAL! Using the key directly from your snippet for this code.
 TORN_API_KEY = "1Wu5Br5fy7gbb7gU" 
 
 # =========================================================================
@@ -34,12 +33,13 @@ app = Flask(__name__)
 def home():
     return "✅ Torn City Bot is alive!"
 def run_web():
+    # Use 0.0.0.0 and the port from environment variables
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False) 
 # ---------------------------------------------------------------------------
 
 
-# --- Fixed Item Data (Updated for more explicit target countries) ---
+# --- Fixed Item Data (Needed for Vendor Buy Price) ---
 # Structure: [Item ID, Item Name, Vendor Buy Price, Country, Category]
 FOREIGN_ITEMS_DATA = [
     # South Africa (SA)
@@ -55,7 +55,7 @@ FOREIGN_ITEMS_DATA = [
     [270, "Peony", 5000, "China", "Flower"],
     [276, "Chinese Dragon Plushie", 400, "China", "Plushie"],
     
-    # Other items to keep existing functionality / other common items
+    # Other common items / Countries
     [266, "Cherry Blossom", 500, "Japan", "Flower"], # Japan
     [277, "Panda Plushie", 400, "Argentina", "Plushie"],
     [269, "Jaguar Plushie", 10000, "Mexico", "Plushie"],
@@ -76,6 +76,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     try:
+        # Sync global commands on ready for Slash Commands
         synced = await bot.tree.sync() 
         print(f"✅ Synced {len(synced)} command(s) globally.")
     except Exception as e:
@@ -87,25 +88,26 @@ async def fetch_foreign_stock(api_key):
     try:
         # Use the 'user' section with the 'travel' selection
         url = f"https://api.torn.com/user/?selections=travel&key={api_key}"
+        # NOTE: requests is synchronous, but we leave it for simplicity
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         
-        # Check for API error structure
         if 'error' in data:
+            # Raise an error if Torn API reports one (e.g., API key lacking 'Travel' permission)
             raise requests.exceptions.HTTPError(f"Torn API reported error: {data['error']['error']}", response=response)
         
-        # The 'travel' selection returns the stock under a 'stocks' key
         return data.get('stocks', {}) 
     except requests.exceptions.RequestException as e:
         print(f"Torn API Stock Error: {e}")
         return None
 
-# --- Existing /flyprofits command (kept for consistency) ---
-@bot.hybrid_command(name='flyprofits', description='Displays the top profitable foreign items.')
+
+# --- Revised /flyprofits command (Filter removed) ---
+@bot.hybrid_command(name='flyprofits', description='Displays the top profitable foreign items (unfiltered).')
 async def fly_profits(ctx):
-    """Fetches and displays the top 5 most profitable foreign items based on live market price."""
-    # (Existing implementation of fly_profits remains here)
+    """Fetches and displays the top 5 most profitable foreign items based on live market price (profit > $0)."""
+    
     await ctx.defer() 
     await ctx.send("✈️ **Fetching Live Profit Data...** This may take a moment.")
     
@@ -122,16 +124,19 @@ async def fly_profits(ctx):
         await ctx.reply(f"❌ **API Error:** Could not connect to Torn API or key invalid: `{e}`")
         return
     
+    # --- Calculate Profit for each item (Filter only profit > $0) ---
     for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
         item_id_str = str(item_id)
         
+        # Ensure item and market data exist
         if item_id_str not in live_prices or 'itemmarket' not in live_prices[item_id_str] or not live_prices[item_id_str]['itemmarket']:
             continue 
             
         market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
         gross_profit = market_sell_price - vendor_buy
         
-        if gross_profit >= 15000:
+        # CRITICAL CHANGE: Only filter for items with ANY profit (profit > 0)
+        if gross_profit > 0:
             profit_data.append({
                 "name": name,
                 "country": country,
@@ -141,16 +146,18 @@ async def fly_profits(ctx):
                 "category": category
             })
             
+    # --- Sort by Profit and Display ---
     profit_data.sort(key=lambda x: x['profit'], reverse=True)
     
     if not profit_data:
-        await ctx.send("No items found with a Gross Profit over $15,000 at this time. Market might be low.")
+        await ctx.send("No items found with any gross profit right now. Market might be heavily saturated.")
         return
 
-    msg = "💰 **Top 5 Live High-Profit Foreign Items (Gross Profit > $15K)**\n"
+    msg = "💰 **Top Live Profitable Foreign Items (Gross Profit > $0)**\n"
     msg += "*(Based on lowest price in Item Market)*\n\n"
     
-    for i, item in enumerate(profit_data[:5]):
+    # Display top 5 items, or all if less than 5
+    for i, item in enumerate(profit_data[:5]): 
         msg += (
             f"**{i+1}. {item['name']}** ({item['country']})\n"
             f"> Buy: **${item['vendor_buy']:,}** | Sell: **${item['market_sell']:,}** | **LIVE PROFIT: ${item['profit']:,}**\n"
@@ -158,7 +165,8 @@ async def fly_profits(ctx):
 
     await ctx.reply(msg, ephemeral=False) 
 
-# --- NEW: /flystock command ---
+
+# --- /flystock command (Shows stock, buy, sell, and profit) ---
 @bot.hybrid_command(name='flystock', description='Shows live stock, price, and profit for key foreign items.')
 async def fly_stock(ctx):
     """Fetches live stock and profit for plushies and flowers from target countries."""
@@ -168,7 +176,7 @@ async def fly_stock(ctx):
     # 1. Fetch Foreign Stock Data (Country Vendor Stock)
     vendor_stock = await fetch_foreign_stock(TORN_API_KEY)
     if vendor_stock is None:
-        await ctx.reply("❌ **API Error:** Could not retrieve current country stock. Check API key permissions (Travel selection) or server connection.")
+        await ctx.reply("❌ **API Error:** Could not retrieve current country stock. Check API key permissions (`Travel` selection) or server connection.")
         return
 
     # 2. Filter Item Data for Market Price Check (Plushies, Flowers, Xanax from specific countries)
@@ -179,7 +187,7 @@ async def fly_stock(ctx):
     ]
     
     if not filtered_items:
-        await ctx.reply("Error: No items found in the target list for the specified countries/categories.")
+        await ctx.reply("Error: No key items found in the target list.")
         return
 
     item_ids = [str(item[0]) for item in filtered_items]
@@ -209,7 +217,6 @@ async def fly_stock(ctx):
         gross_profit = market_sell_price - vendor_buy
         
         # Get Country Stock
-        # Vendor stock structure: {country_name: {item_id: stock_count, ...}}
         stock = vendor_stock.get(country, {}).get(item_id_str, 0)
 
         results.append({
@@ -225,8 +232,9 @@ async def fly_stock(ctx):
     results.sort(key=lambda x: (x['country'], x['profit']), reverse=True) 
 
     # 5. Build Output Message
-    msg = "✈️ **Live Foreign Item Stock & Profit (Japan, China, UAE, SA)**\n"
-    msg += "*Format: [Stock] | Country | Item | **Vendor Buy** | **Market Sell** | **Net Profit***\n\n"
+    msg = "✈️ **Live Foreign Item Stock & Profit (Key Countries)**\n"
+    msg += "*Format: [Stock] | Item | **Vendor Buy** | **Market Sell** | **Net Profit***\n"
+    msg += "*(Profit based on current Item Market lowest listing)*\n\n"
     
     current_country = ""
     
@@ -237,7 +245,11 @@ async def fly_stock(ctx):
             current_country = item['country']
         
         # Format the profit string as requested: BUY|SELL|PROFIT
-        profit_str = f"**${item['vendor_buy']:,}** | **${item['market_sell']:,}** | **${item['profit']:,}**"
+        profit_str = (
+            f"**${item['vendor_buy']:,}** | "
+            f"**${item['market_sell']:,}** | "
+            f"**${item['profit']:,}**"
+        )
         
         msg += (
             f"**[{item['stock']:,}]** | {item['name']} "
