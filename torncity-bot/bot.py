@@ -1,31 +1,40 @@
 import sys, types
 import os
-from threading import Thread
-from flask import Flask
-import requests
-import json
-import discord
-from discord.ext import commands
-from discord import app_commands # Import for app commands
-
-# --- TORN API Key ---
-TORN_API_KEY = "1Wu5Br5fy7gbb7gU" 
-
 # =========================================================================
-# === FIX: Voice Module Mocking (Safe to keep) ===
+# === CRITICAL FIX: Voice Module Mocking (MOVED TO TOP) ===
+# This block must run BEFORE the 'import discord' statement.
 try:
+    # 1. Mock 'audioop' first, as it's the first module to fail.
+    sys.modules['audioop'] = types.ModuleType('audioop')  
+    
+    # 2. Mock Voice Protocols needed by discord.py internals
     class VoiceProtocol(object): pass
     class VoiceClient(object): pass
+    
+    # 3. Mock the modules that reference the above classes
     sys.modules["discord.player"] = types.ModuleType("discord.player")
-    sys.modules['audioop'] = types.ModuleType('audioop') 
+    
     voice_client = types.ModuleType("discord.voice_client")
     voice_client.VoiceClient = VoiceClient
     voice_client.VoiceProtocol = VoiceProtocol
     sys.modules["discord.voice_client"] = voice_client
-except Exception:
-    pass
+    
+except Exception as e:
+    # Print error but allow execution to continue if mock fails for some reason
+    print(f"Mocking failed: {e}") 
 # =========================================================================
 
+from threading import Thread
+from flask import Flask
+import aiohttp 
+import json
+import discord 
+from discord.ext import commands
+from discord import app_commands 
+
+
+# --- TORN API Key ---
+TORN_API_KEY = "1Wu5Br5fy7gbb7gU" 
 
 # --- Web server for Render keep-alive ---
 app = Flask(__name__)
@@ -33,14 +42,12 @@ app = Flask(__name__)
 def home():
     return "✅ Torn City Bot is alive!"
 def run_web():
-    # Use 0.0.0.0 and the port from environment variables
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False) 
 # ---------------------------------------------------------------------------
 
 
 # --- Fixed Item Data (Needed for Vendor Buy Price) ---
-# Structure: [Item ID, Item Name, Vendor Buy Price, Country, Category]
 FOREIGN_ITEMS_DATA = [
     # South Africa (SA)
     [260, "Xanax", 7600, "South Africa", "Drug"], 
@@ -76,34 +83,32 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     try:
-        # Sync global commands on ready for Slash Commands
         synced = await bot.tree.sync() 
         print(f"✅ Synced {len(synced)} command(s) globally.")
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
 
-# --- Helper function to fetch Foreign Stock (Requires a 'user' call) ---
+# --- Helper function to fetch Foreign Stock (ASYNCHRONOUS) ---
 async def fetch_foreign_stock(api_key):
     """Fetches the current foreign stock from the Torn API travel selection."""
     try:
-        # Use the 'user' section with the 'travel' selection
         url = f"https://api.torn.com/user/?selections=travel&key={api_key}"
-        # NOTE: requests is synchronous, but we leave it for simplicity
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                response.raise_for_status()
+                data = await response.json()
         
         if 'error' in data:
-            # Raise an error if Torn API reports one (e.g., API key lacking 'Travel' permission)
-            raise requests.exceptions.HTTPError(f"Torn API reported error: {data['error']['error']}", response=response)
+            raise Exception(f"Torn API reported error: {data['error']['error']}")
         
         return data.get('stocks', {}) 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"Torn API Stock Error: {e}")
         return None
 
 
-# --- Revised /flyprofits command (Filter removed) ---
+# --- Revised /flyprofits command (Filter removed, ASYNCHRONOUS) ---
 @bot.hybrid_command(name='flyprofits', description='Displays the top profitable foreign items (unfiltered).')
 async def fly_profits(ctx):
     """Fetches and displays the top 5 most profitable foreign items based on live market price (profit > $0)."""
@@ -116,26 +121,29 @@ async def fly_profits(ctx):
     
     try:
         url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status() 
-        live_prices = response.json()
         
-    except requests.exceptions.RequestException as e:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                response.raise_for_status() 
+                live_prices = await response.json()
+        
+    except aiohttp.ClientError as e:
         await ctx.reply(f"❌ **API Error:** Could not connect to Torn API or key invalid: `{e}`")
+        return
+    except Exception as e:
+        await ctx.reply(f"❌ **API Error:** An unknown error occurred: `{e}`")
         return
     
     # --- Calculate Profit for each item (Filter only profit > $0) ---
     for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
         item_id_str = str(item_id)
         
-        # Ensure item and market data exist
         if item_id_str not in live_prices or 'itemmarket' not in live_prices[item_id_str] or not live_prices[item_id_str]['itemmarket']:
             continue 
             
         market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
         gross_profit = market_sell_price - vendor_buy
         
-        # CRITICAL CHANGE: Only filter for items with ANY profit (profit > 0)
         if gross_profit > 0:
             profit_data.append({
                 "name": name,
@@ -156,17 +164,16 @@ async def fly_profits(ctx):
     msg = "💰 **Top Live Profitable Foreign Items (Gross Profit > $0)**\n"
     msg += "*(Based on lowest price in Item Market)*\n\n"
     
-    # Display top 5 items, or all if less than 5
     for i, item in enumerate(profit_data[:5]): 
         msg += (
             f"**{i+1}. {item['name']}** ({item['country']})\n"
             f"> Buy: **${item['vendor_buy']:,}** | Sell: **${item['market_sell']:,}** | **LIVE PROFIT: ${item['profit']:,}**\n"
         )
 
-    await ctx.reply(msg, ephemeral=False) 
+    await ctx.send(msg) 
 
 
-# --- /flystock command (Shows stock, buy, sell, and profit) ---
+# --- /flystock command (ASYNCHRONOUS) ---
 @bot.hybrid_command(name='flystock', description='Shows live stock, price, and profit for key foreign items.')
 async def fly_stock(ctx):
     """Fetches live stock and profit for plushies and flowers from target countries."""
@@ -176,30 +183,29 @@ async def fly_stock(ctx):
     # 1. Fetch Foreign Stock Data (Country Vendor Stock)
     vendor_stock = await fetch_foreign_stock(TORN_API_KEY)
     if vendor_stock is None:
-        await ctx.reply("❌ **API Error:** Could not retrieve current country stock. Check API key permissions (`Travel` selection) or server connection.")
+        await ctx.send("❌ **API Error:** Could not retrieve current country stock. Check API key permissions (`Travel` selection).")
         return
 
-    # 2. Filter Item Data for Market Price Check (Plushies, Flowers, Xanax from specific countries)
+    # 2. Filter Item Data
     target_countries = ["Japan", "China", "United Arab Emirates", "South Africa"]
     filtered_items = [
         item for item in FOREIGN_ITEMS_DATA 
         if item[3] in target_countries and (item[4] == "Plushie" or item[4] == "Flower" or item[1] == "Xanax")
     ]
     
-    if not filtered_items:
-        await ctx.reply("Error: No key items found in the target list.")
-        return
-
     item_ids = [str(item[0]) for item in filtered_items]
 
-    # 3. Fetch Item Market Prices
+    # 3. Fetch Item Market Prices (ASYNCHRONOUS)
     try:
         url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        live_prices = response.json()
-    except requests.exceptions.RequestException as e:
-        await ctx.reply(f"❌ **API Error:** Could not connect to Torn Item Market. `{e}`")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                response.raise_for_status()
+                live_prices = await response.json()
+        
+    except aiohttp.ClientError as e:
+        await ctx.send(f"❌ **API Error:** Could not connect to Torn Item Market. `{e}`")
         return
 
     # 4. Compile and Format Final Data
@@ -208,15 +214,11 @@ async def fly_stock(ctx):
     for item_id, name, vendor_buy, country, category in filtered_items:
         item_id_str = str(item_id)
         
-        # Get Market Sell Price (Lowest listing)
         market_sell_price = 0
         if item_id_str in live_prices and 'itemmarket' in live_prices[item_id_str] and live_prices[item_id_str]['itemmarket']:
             market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
         
-        # Calculate Profit
         gross_profit = market_sell_price - vendor_buy
-        
-        # Get Country Stock
         stock = vendor_stock.get(country, {}).get(item_id_str, 0)
 
         results.append({
@@ -239,12 +241,10 @@ async def fly_stock(ctx):
     current_country = ""
     
     for item in results:
-        # Add a country separator
         if item['country'] != current_country:
             msg += f"\n**--- {item['country'].upper()} ---**\n"
             current_country = item['country']
         
-        # Format the profit string as requested: BUY|SELL|PROFIT
         profit_str = (
             f"**${item['vendor_buy']:,}** | "
             f"**${item['market_sell']:,}** | "
@@ -256,7 +256,7 @@ async def fly_stock(ctx):
             f"| {profit_str}\n"
         )
         
-    await ctx.reply(msg)
+    await ctx.send(msg)
 
 # --- Start bot and web server ---
 if __name__ == "__main__":
