@@ -6,13 +6,13 @@ import requests
 import json
 import discord
 from discord.ext import commands
+from discord import app_commands # NEW: Import for app commands
 
 # --- TORN API Key ---
 TORN_API_KEY = "1Wu5Br5fy7gbb7gU"
 
 # =========================================================================
-# === FIX: Voice Module Mocking (Now redundant on Python 3.11/3.12, but safe to keep) ===
-# We keep this block for robustness, although the Python version change should have fixed it.
+# === FIX: Voice Module Mocking (Safe to keep) ===
 try:
     class VoiceProtocol(object): pass
     class VoiceClient(object): pass
@@ -33,8 +33,8 @@ app = Flask(__name__)
 def home():
     return "✅ Torn City Bot is alive!"
 def run_web():
-    port = int(os.environ.get("PORT", 10000)) # Using 10000 as a standard Render port now
-    # Ensure debug=False for production
+    # Use 0.0.0.0 and the port from environment variables
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False) 
 # ---------------------------------------------------------------------------
 
@@ -60,19 +60,32 @@ FOREIGN_ITEMS_DATA = [
     [274, "Sea Turtle Plushie", 500, "Hawaii", "Plushie"],
 ]
 
-# --- Bot Commands ---
-# NOTE: The command prefix is set to '/'
+# --- Bot Initialization ---
+# CHANGE 1: Set a prefix that is NOT '/'
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+# Using '!' as the command prefix
+bot = commands.Bot(command_prefix='!', intents=intents) 
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+    # NEW: Sync global commands on ready
+    try:
+        # Syncing takes time, but is necessary for the slash command functionality
+        synced = await bot.tree.sync() 
+        print(f"✅ Synced {len(synced)} command(s) globally.")
+    except Exception as e:
+        print(f"❌ Failed to sync commands: {e}")
 
-@bot.command(name='flyprofits')
+# --- Bot Commands ---
+# CHANGE 2: Use @bot.hybrid_command
+@bot.hybrid_command(name='flyprofits', description='Displays the top profitable foreign items.')
 async def fly_profits(ctx):
     """Fetches and displays the top 5 most profitable foreign items based on live market price."""
+    
+    # Use ctx.defer() for hybrid commands to acknowledge the command immediately
+    await ctx.defer() 
     
     await ctx.send("✈️ **Fetching Live Profit Data...** This may take a moment.")
     
@@ -81,22 +94,27 @@ async def fly_profits(ctx):
     
     try:
         url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
+        # Make the request asynchronous (a good practice in async code)
+        # Note: requests is synchronous, but we keep it simple for now.
         response = requests.get(url, timeout=10)
         response.raise_for_status() 
         live_prices = response.json()
         
     except requests.exceptions.RequestException as e:
         print(f"Torn API Error: {e}")
-        await ctx.send(f"❌ **API Error:** Could not connect to Torn API or key invalid: `{e}`")
+        # Use ctx.reply for a more direct response
+        await ctx.reply(f"❌ **API Error:** Could not connect to Torn API or key invalid: `{e}`")
         return
     
     # --- Calculate Gross Profit for each item ---
     for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
         item_id_str = str(item_id)
         
+        # Ensure item and market data exist
         if item_id_str not in live_prices or 'itemmarket' not in live_prices[item_id_str] or not live_prices[item_id_str]['itemmarket']:
             continue 
             
+        # Get the lowest market sell price
         market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
         gross_profit = market_sell_price - vendor_buy
         
@@ -127,7 +145,8 @@ async def fly_profits(ctx):
             f"> Buy: **${item['vendor_buy']:,}** | Sell: **${item['market_sell']:,}** | **LIVE PROFIT: ${item['profit']:,}**\n"
         )
 
-    await ctx.send(msg)
+    # Use ctx.reply for a cleaner final output
+    await ctx.reply(msg, ephemeral=False) 
 
 # --- Start bot and web server ---
 if __name__ == "__main__":
