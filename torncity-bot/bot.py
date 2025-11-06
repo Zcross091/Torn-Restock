@@ -6,10 +6,11 @@ import requests
 import json
 import discord
 from discord.ext import commands
-from discord import app_commands # NEW: Import for app commands
+from discord import app_commands 
 
 # --- TORN API Key ---
-TORN_API_KEY = "1Wu5Br5fy7gbb7gU"
+# KEEP THIS CONFIDENTIAL! Using the key directly from your snippet for this code.
+TORN_API_KEY = "1Wu5Br5fy7gbb7gU" 
 
 # =========================================================================
 # === FIX: Voice Module Mocking (Safe to keep) ===
@@ -33,24 +34,30 @@ app = Flask(__name__)
 def home():
     return "✅ Torn City Bot is alive!"
 def run_web():
-    # Use 0.0.0.0 and the port from environment variables
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False) 
 # ---------------------------------------------------------------------------
 
 
-# --- Fixed Item Data (Needed for Vendor Buy Price) ---
+# --- Fixed Item Data (Updated for more explicit target countries) ---
 # Structure: [Item ID, Item Name, Vendor Buy Price, Country, Category]
 FOREIGN_ITEMS_DATA = [
+    # South Africa (SA)
     [260, "Xanax", 7600, "South Africa", "Drug"], 
-    [267, "Camel Plushie", 14000, "United Arab Emirates", "Plushie"],
-    [273, "Tribulus Omanense", 6000, "United Arab Emirates", "Flower"],
-    [270, "Peony", 5000, "China", "Flower"],
-    [276, "Chinese Dragon Plushie", 400, "China", "Plushie"],
-    [266, "Cherry Blossom", 500, "Japan", "Flower"],
-    [277, "Panda Plushie", 400, "Argentina", "Plushie"],
     [271, "African Violet", 2000, "South Africa", "Flower"],
     [278, "Lion Plushie", 400, "South Africa", "Plushie"],
+    
+    # United Arab Emirates (UAE)
+    [267, "Camel Plushie", 14000, "United Arab Emirates", "Plushie"],
+    [273, "Tribulus Omanense", 6000, "United Arab Emirates", "Flower"],
+    
+    # China
+    [270, "Peony", 5000, "China", "Flower"],
+    [276, "Chinese Dragon Plushie", 400, "China", "Plushie"],
+    
+    # Other items to keep existing functionality / other common items
+    [266, "Cherry Blossom", 500, "Japan", "Flower"], # Japan
+    [277, "Panda Plushie", 400, "Argentina", "Plushie"],
     [269, "Jaguar Plushie", 10000, "Mexico", "Plushie"],
     [264, "Banana Orchid", 4000, "Cayman Islands", "Flower"],
     [265, "Crocus", 600, "Canada", "Flower"],
@@ -61,32 +68,45 @@ FOREIGN_ITEMS_DATA = [
 ]
 
 # --- Bot Initialization ---
-# CHANGE 1: Set a prefix that is NOT '/'
 intents = discord.Intents.default()
 intents.message_content = True
-# Using '!' as the command prefix
 bot = commands.Bot(command_prefix='!', intents=intents) 
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    # NEW: Sync global commands on ready
     try:
-        # Syncing takes time, but is necessary for the slash command functionality
         synced = await bot.tree.sync() 
         print(f"✅ Synced {len(synced)} command(s) globally.")
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
 
-# --- Bot Commands ---
-# CHANGE 2: Use @bot.hybrid_command
+# --- Helper function to fetch Foreign Stock (Requires a 'user' call) ---
+async def fetch_foreign_stock(api_key):
+    """Fetches the current foreign stock from the Torn API travel selection."""
+    try:
+        # Use the 'user' section with the 'travel' selection
+        url = f"https://api.torn.com/user/?selections=travel&key={api_key}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Check for API error structure
+        if 'error' in data:
+            raise requests.exceptions.HTTPError(f"Torn API reported error: {data['error']['error']}", response=response)
+        
+        # The 'travel' selection returns the stock under a 'stocks' key
+        return data.get('stocks', {}) 
+    except requests.exceptions.RequestException as e:
+        print(f"Torn API Stock Error: {e}")
+        return None
+
+# --- Existing /flyprofits command (kept for consistency) ---
 @bot.hybrid_command(name='flyprofits', description='Displays the top profitable foreign items.')
 async def fly_profits(ctx):
     """Fetches and displays the top 5 most profitable foreign items based on live market price."""
-    
-    # Use ctx.defer() for hybrid commands to acknowledge the command immediately
+    # (Existing implementation of fly_profits remains here)
     await ctx.defer() 
-    
     await ctx.send("✈️ **Fetching Live Profit Data...** This may take a moment.")
     
     profit_data = []
@@ -94,31 +114,23 @@ async def fly_profits(ctx):
     
     try:
         url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
-        # Make the request asynchronous (a good practice in async code)
-        # Note: requests is synchronous, but we keep it simple for now.
         response = requests.get(url, timeout=10)
         response.raise_for_status() 
         live_prices = response.json()
         
     except requests.exceptions.RequestException as e:
-        print(f"Torn API Error: {e}")
-        # Use ctx.reply for a more direct response
         await ctx.reply(f"❌ **API Error:** Could not connect to Torn API or key invalid: `{e}`")
         return
     
-    # --- Calculate Gross Profit for each item ---
     for item_id, name, vendor_buy, country, category in FOREIGN_ITEMS_DATA:
         item_id_str = str(item_id)
         
-        # Ensure item and market data exist
         if item_id_str not in live_prices or 'itemmarket' not in live_prices[item_id_str] or not live_prices[item_id_str]['itemmarket']:
             continue 
             
-        # Get the lowest market sell price
         market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
         gross_profit = market_sell_price - vendor_buy
         
-        # --- Apply the High-Profit Threshold Filter (>$15,000) ---
         if gross_profit >= 15000:
             profit_data.append({
                 "name": name,
@@ -129,7 +141,6 @@ async def fly_profits(ctx):
                 "category": category
             })
             
-    # --- Sort by Profit and Display ---
     profit_data.sort(key=lambda x: x['profit'], reverse=True)
     
     if not profit_data:
@@ -145,8 +156,95 @@ async def fly_profits(ctx):
             f"> Buy: **${item['vendor_buy']:,}** | Sell: **${item['market_sell']:,}** | **LIVE PROFIT: ${item['profit']:,}**\n"
         )
 
-    # Use ctx.reply for a cleaner final output
     await ctx.reply(msg, ephemeral=False) 
+
+# --- NEW: /flystock command ---
+@bot.hybrid_command(name='flystock', description='Shows live stock, price, and profit for key foreign items.')
+async def fly_stock(ctx):
+    """Fetches live stock and profit for plushies and flowers from target countries."""
+    
+    await ctx.defer()
+    
+    # 1. Fetch Foreign Stock Data (Country Vendor Stock)
+    vendor_stock = await fetch_foreign_stock(TORN_API_KEY)
+    if vendor_stock is None:
+        await ctx.reply("❌ **API Error:** Could not retrieve current country stock. Check API key permissions (Travel selection) or server connection.")
+        return
+
+    # 2. Filter Item Data for Market Price Check (Plushies, Flowers, Xanax from specific countries)
+    target_countries = ["Japan", "China", "United Arab Emirates", "South Africa"]
+    filtered_items = [
+        item for item in FOREIGN_ITEMS_DATA 
+        if item[3] in target_countries and (item[4] == "Plushie" or item[4] == "Flower" or item[1] == "Xanax")
+    ]
+    
+    if not filtered_items:
+        await ctx.reply("Error: No items found in the target list for the specified countries/categories.")
+        return
+
+    item_ids = [str(item[0]) for item in filtered_items]
+
+    # 3. Fetch Item Market Prices
+    try:
+        url = f"https://api.torn.com/market/{','.join(item_ids)}?selections=itemmarket&key={TORN_API_KEY}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        live_prices = response.json()
+    except requests.exceptions.RequestException as e:
+        await ctx.reply(f"❌ **API Error:** Could not connect to Torn Item Market. `{e}`")
+        return
+
+    # 4. Compile and Format Final Data
+    results = []
+    
+    for item_id, name, vendor_buy, country, category in filtered_items:
+        item_id_str = str(item_id)
+        
+        # Get Market Sell Price (Lowest listing)
+        market_sell_price = 0
+        if item_id_str in live_prices and 'itemmarket' in live_prices[item_id_str] and live_prices[item_id_str]['itemmarket']:
+            market_sell_price = min(listing['cost'] for listing in live_prices[item_id_str]['itemmarket'])
+        
+        # Calculate Profit
+        gross_profit = market_sell_price - vendor_buy
+        
+        # Get Country Stock
+        # Vendor stock structure: {country_name: {item_id: stock_count, ...}}
+        stock = vendor_stock.get(country, {}).get(item_id_str, 0)
+
+        results.append({
+            "name": name,
+            "country": country,
+            "stock": stock,
+            "vendor_buy": vendor_buy,
+            "market_sell": market_sell_price,
+            "profit": gross_profit
+        })
+
+    # Sort by Country, then Profit
+    results.sort(key=lambda x: (x['country'], x['profit']), reverse=True) 
+
+    # 5. Build Output Message
+    msg = "✈️ **Live Foreign Item Stock & Profit (Japan, China, UAE, SA)**\n"
+    msg += "*Format: [Stock] | Country | Item | **Vendor Buy** | **Market Sell** | **Net Profit***\n\n"
+    
+    current_country = ""
+    
+    for item in results:
+        # Add a country separator
+        if item['country'] != current_country:
+            msg += f"\n**--- {item['country'].upper()} ---**\n"
+            current_country = item['country']
+        
+        # Format the profit string as requested: BUY|SELL|PROFIT
+        profit_str = f"**${item['vendor_buy']:,}** | **${item['market_sell']:,}** | **${item['profit']:,}**"
+        
+        msg += (
+            f"**[{item['stock']:,}]** | {item['name']} "
+            f"| {profit_str}\n"
+        )
+        
+    await ctx.reply(msg)
 
 # --- Start bot and web server ---
 if __name__ == "__main__":
