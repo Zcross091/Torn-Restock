@@ -8,13 +8,17 @@ import time # Used for exponential backoff
 
 # --- 1. Configuration and Setup (Using Environment Variables) ---
 # Discord Bot Token is read from the environment (e.g., set by Render/hosting)
+# NOTE: To fix the 'ModuleNotFoundError: No module named 'audioop'' error seen in logs,
+# you must set a PYTHON_VERSION environment variable on Render (e.g., 3.12.0).
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
 intents = discord.Intents.default()
 # We need message_content intent to handle prefix commands, though we primarily use slash commands
 intents.message_content = True 
 bot = commands.Bot(command_prefix='!', intents=intents)
-tree = app_commands.CommandTree(bot)
+# FIX: The commands.Bot class automatically initializes a command tree. We now reference 
+# the existing one (bot.tree) instead of creating a new one to resolve the ClientException.
+tree = bot.tree
 
 # --- 2. Torn API Interaction Logic with Rate Limiting ---
 
