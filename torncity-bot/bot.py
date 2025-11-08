@@ -10,15 +10,22 @@ from aiohttp import web
 
 # --- 1. Configuration and Setup (Using Environment Variables) ---
 # Discord Bot Token is read from the environment (e.g., set by Render/hosting)
-# NOTE: To fix the 'ModuleNotFoundError: No module named 'audioop'' error seen in logs,
-# you must set a PYTHON_VERSION environment variable on Render (e.g., 3.12.0).
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-# Define the port the web server will bind to
+# Define the port the web server will bind to (required for Render Web Service)
 PORT = int(os.environ.get('PORT', 10000))
 
+# Map of specific items sold in the travel destinations to check prices for
+TRAVEL_ITEM_MAP = {
+    "China": ["Panda Plushie", "Bottle of Beer"],
+    "UAE (Dubai)": ["Gold Plated AK-47", "Bottle of Champagne"],
+    "South Africa": ["African Lion Plushie", "Bottle of Minty Hot Chocolate"],
+    "Japan": ["Kitten Plushie", "Bottle of Sake"]
+}
+# Flatten the map for easy lookup in the API response
+TARGET_ITEM_NAMES = [item for sublist in TRAVEL_ITEM_MAP.values() for item in sublist]
+
 intents = discord.Intents.default()
-# We need message_content intent for compatibility, though we primarily use slash commands
 intents.message_content = True 
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
@@ -40,17 +47,13 @@ def fetch_torn_data_with_retry(url: str, max_retries: int = 3) -> dict:
                     time.sleep(2 ** attempt)
                     continue
                 else:
-                    # Final attempt failed due to rate limit
                     return {"error": "Torn API Error 5: Rate limit exceeded. Please wait a minute and try again."}
 
-            # Return data if successful or if a different API error occurs
             return data
 
         except requests.exceptions.RequestException as e:
-            # Handle connection/timeout errors
             return {"error": f"API Connection Error: Failed to connect to Torn API. ({e})"}
         except json.JSONDecodeError:
-            # Handle invalid JSON response
             return {"error": "API Response Error: Received invalid JSON from Torn."}
         
     return {"error": "Maximum retries reached due to an unknown issue."}
@@ -58,29 +61,24 @@ def fetch_torn_data_with_retry(url: str, max_retries: int = 3) -> dict:
 
 def get_torn_stock_data(api_key: str):
     """
-    Fetches the current live price and information for all stocks from the Torn API.
+    Fetches the current live price and information for all stocks.
     """
-    # The 'torn' resource with 'stocks' selection returns data for all stocks.
     url = f"https://api.torn.com/torn/?selections=stocks&key={api_key}"
 
     data = fetch_torn_data_with_retry(url)
 
-    # Check for errors returned by the fetching function
     if "error" in data:
         return data
 
-    # Check for Torn API specific errors
     if 'error' in data:
         code = data['error']['code']
         message = data['error']['error']
         return {"error": f"Torn API Error {code}: {message}"}
 
-    # Extract and format stock data
     try:
         stocks = data.get('stocks', {})
         stock_list = []
         for stock_id, stock_info in stocks.items():
-            # Format price with commas
             formatted_price = f"${stock_info.get('current_price', 0):,.2f}"
             
             stock_list.append({
@@ -91,9 +89,57 @@ def get_torn_stock_data(api_key: str):
                 "benefit_available": stock_info.get('benefit_available', False)
             })
         
-        # Sort by acronym for readability
         stock_list.sort(key=lambda x: x['acronym'])
         return {"stocks": stock_list}
+        
+    except Exception as e:
+        return {"error": f"Data Parsing Error: Missing expected fields or unexpected structure. {e}"}
+
+
+def get_travel_item_info(api_key: str):
+    """
+    Fetches details for all items and filters for specific travel items.
+    Torn API does not provide real-time foreign market prices, so this uses
+    the item's official 'market_price' (average) and NPC 'sell_price'.
+    """
+    # The 'torn' resource with 'items' selection returns data for all items.
+    url = f"https://api.torn.com/torn/?selections=items&key={api_key}"
+
+    data = fetch_torn_data_with_retry(url)
+
+    if "error" in data:
+        return data
+
+    if 'error' in data:
+        code = data['error']['code']
+        message = data['error']['error']
+        return {"error": f"Torn API Error {code}: {message}"}
+
+    try:
+        all_items = data.get('items', {})
+        target_items = {}
+        
+        # Iterate through all items returned by the API
+        for item_info in all_items.values():
+            item_name = item_info.get('name')
+            
+            # Check if this item is one of our target travel items
+            if item_name in TARGET_ITEM_NAMES:
+                
+                # Format prices
+                formatted_market_price = f"${item_info.get('market_price', 0):,.0f}"
+                formatted_sell_price = f"${item_info.get('sell_price', 0):,.0f}"
+                
+                target_items[item_name] = {
+                    "market_price": formatted_market_price,
+                    "sell_price": formatted_sell_price,
+                    "rarity": item_info.get('rarity', 'N/A')
+                }
+        
+        if not target_items:
+             return {"error": "Failed to find any matching travel item data. API structure may have changed or key lacks permission."}
+             
+        return {"items": target_items}
         
     except Exception as e:
         return {"error": f"Data Parsing Error: Missing expected fields or unexpected structure. {e}"}
@@ -111,32 +157,28 @@ async def on_ready():
 
 
 @tree.command(name="stocks", description="Displays live stock prices from the Torn Stock Market.")
-@app_commands.describe(api_key="Your 16-character Torn City API key (required for API access).")
+@app_commands.describe(api_key="Your 16-character Torn City API key (e.g., 1Wu5Br5fy7gbb7gU).")
 async def torn_stocks_command(interaction: discord.Interaction, api_key: str):
     """Handles the /stocks slash command."""
     
-    # Immediately acknowledge the command
     await interaction.response.defer()
 
-    # Get data from the Torn API
     stocks_data = get_torn_stock_data(api_key.strip()) 
 
     if "error" in stocks_data:
-        # Send an error message if the API call failed
+        # Error handling as before
         error_embed = discord.Embed(
-            title=":x: Torn Market Lookup Failed",
+            title=":x: Torn Stocks Lookup Failed",
             description=stocks_data["error"],
             color=discord.Color.red()
         )
-        error_embed.set_footer(text="Check your API key and permissions. Example key: 1Wu5Br5fy7gbb7gU")
+        error_embed.set_footer(text="Check your API key and permissions.")
         await interaction.followup.send(embed=error_embed, ephemeral=True)
     else:
         stock_list = stocks_data['stocks']
         
         # Prepare the fields for the embed (max 25 fields per embed)
-        # We will split the list into three columns to be concise
         field_value = []
-        
         for stock in stock_list:
             benefit_indicator = ":gem:" if stock['benefit_available'] else ""
             field_value.append(
@@ -144,7 +186,7 @@ async def torn_stocks_command(interaction: discord.Interaction, api_key: str):
             )
 
         # Create 3 columns by splitting the list
-        chunk_size = (len(field_value) + 2) // 3 # Calculate chunk size to ensure even distribution
+        chunk_size = (len(field_value) + 2) // 3 
         chunks = [field_value[i:i + chunk_size] for i in range(0, len(field_value), chunk_size)]
 
         embed = discord.Embed(
@@ -153,7 +195,6 @@ async def torn_stocks_command(interaction: discord.Interaction, api_key: str):
             color=0x2ECC71
         )
         
-        # Add the three columns as fields
         embed.add_field(name="Acronym | Price", value="\n".join(chunks[0]), inline=True)
         if len(chunks) > 1:
             embed.add_field(name="\u200b", value="\n".join(chunks[1]), inline=True)
@@ -162,11 +203,56 @@ async def torn_stocks_command(interaction: discord.Interaction, api_key: str):
 
         embed.set_footer(text=f"Requested by {interaction.user.display_name} | Data via Torn API")
         
-        # Send the final response
+        await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="travelitems", description="Displays average prices for major items sold in Torn's travel destinations.")
+@app_commands.describe(api_key="Your 16-character Torn City API key (e.g., 1Wu5Br5fy7gbb7gU).")
+async def torn_travelitems_command(interaction: discord.Interaction, api_key: str):
+    """Handles the /travelitems slash command."""
+    
+    await interaction.response.defer()
+
+    items_data = get_travel_item_info(api_key.strip()) 
+
+    if "error" in items_data:
+        error_embed = discord.Embed(
+            title=":x: Torn Item Lookup Failed",
+            description=items_data["error"],
+            color=discord.Color.red()
+        )
+        error_embed.set_footer(text="Check your API key and ensure it has necessary permissions.")
+        await interaction.followup.send(embed=error_embed, ephemeral=True)
+    else:
+        target_items = items_data['items']
+        embed = discord.Embed(
+            title=":airplane: Travel Market Price Guide",
+            description="Average prices for key plushies and bottles from travel destinations.",
+            color=discord.Color.blue()
+        )
+
+        for country, items_list in TRAVEL_ITEM_MAP.items():
+            field_content = []
+            for item_name in items_list:
+                item_info = target_items.get(item_name)
+                if item_info:
+                    # Note: Market Price is the API's reported average. Sell Price is NPC shop price.
+                    field_content.append(
+                        f"**{item_name}**\n"
+                        f"Avg Market: `{item_info['market_price']}`\n"
+                        f"NPC Sell: `{item_info['sell_price']}`"
+                    )
+            
+            if field_content:
+                embed.add_field(name=f":flag_{country.split(' ')[0].lower()}: {country}", value="\n".join(field_content), inline=True)
+
+        embed.set_footer(text=f"Requested by {interaction.user.display_name} | Prices are system-calculated averages, not live market rates.")
+        
         await interaction.followup.send(embed=embed)
 
 
 # --- 4. Web Server for Hosting (Workaround for Render Web Service) ---
+# This server is essential for satisfying the hosting platform's requirement for an open port.
 
 async def health_check(request):
     """Simple handler for health checks."""
@@ -176,7 +262,7 @@ async def start_web_server():
     """Starts the aiohttp web server on the specified PORT."""
     app = web.Application()
     app.add_routes([web.get('/', health_check)])
-    # Use 0.0.0.0 to bind to all interfaces, and the dynamically set PORT
+    # Use 0.0.0.0 to bind to all interfaces
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
@@ -209,7 +295,6 @@ async def main():
 # --- 5. Run the Application ---
 
 if __name__ == "__main__":
-    # Run the main asynchronous function
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
