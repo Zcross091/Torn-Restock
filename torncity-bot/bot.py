@@ -4,9 +4,9 @@ import json
 import discord
 from discord.ext import commands
 from discord import app_commands
-import time # Used for exponential backoff
-import asyncio # New: For running two async tasks concurrently (bot and web server)
-from aiohttp import web # New: To create a lightweight health check server
+import time 
+import asyncio 
+from aiohttp import web 
 
 # --- 1. Configuration and Setup (Using Environment Variables) ---
 # Discord Bot Token is read from the environment (e.g., set by Render/hosting)
@@ -14,11 +14,13 @@ from aiohttp import web # New: To create a lightweight health check server
 # you must set a PYTHON_VERSION environment variable on Render (e.g., 3.12.0).
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
+# Define the port the web server will bind to
+PORT = int(os.environ.get('PORT', 10000))
+
 intents = discord.Intents.default()
-# We need message_content intent to handle prefix commands, though we primarily use slash commands
+# We need message_content intent for compatibility, though we primarily use slash commands
 intents.message_content = True 
 bot = commands.Bot(command_prefix='!', intents=intents)
-# FIX: Use the existing command tree attached to the bot instance.
 tree = bot.tree
 
 # --- 2. Torn API Interaction Logic with Rate Limiting ---
@@ -54,12 +56,12 @@ def fetch_torn_data_with_retry(url: str, max_retries: int = 3) -> dict:
     return {"error": "Maximum retries reached due to an unknown issue."}
 
 
-def get_torn_user_stats(api_key: str):
+def get_torn_stock_data(api_key: str):
     """
-    Fetches the user's basic profile stats (level, name, networth) from the Torn API.
+    Fetches the current live price and information for all stocks from the Torn API.
     """
-    # Selections for profile and networth. The 'networth' selection is efficient.
-    url = f"https://api.torn.com/user/?selections=profile,networth&key={api_key}"
+    # The 'torn' resource with 'stocks' selection returns data for all stocks.
+    url = f"https://api.torn.com/torn/?selections=stocks&key={api_key}"
 
     data = fetch_torn_data_with_retry(url)
 
@@ -67,34 +69,32 @@ def get_torn_user_stats(api_key: str):
     if "error" in data:
         return data
 
-    # Check for Torn API specific errors (e.g., invalid key, insufficient access)
+    # Check for Torn API specific errors
     if 'error' in data:
         code = data['error']['code']
         message = data['error']['error']
-        
-        # Provide specific guidance for common access error
-        if code == 16:
-             message += " (Hint: Your API key needs 'Full Access' enabled in Torn settings for Net Worth data)."
-        
         return {"error": f"Torn API Error {code}: {message}"}
 
-    # Extract required data
+    # Extract and format stock data
     try:
-        name = data.get('name', 'N/A')
-        player_id = data.get('player_id', 'N/A')
-        level = data.get('level', 0)
-        net_worth = data.get('networth', 0)
-
-        # Format net worth with commas
-        formatted_net_worth = f"${net_worth:,.0f}"
-
-        return {
-            "name": name,
-            "id": player_id,
-            "level": level,
-            "net_worth": formatted_net_worth,
-            "profile_url": f"https://www.torn.com/profiles.php?XID={player_id}"
-        }
+        stocks = data.get('stocks', {})
+        stock_list = []
+        for stock_id, stock_info in stocks.items():
+            # Format price with commas
+            formatted_price = f"${stock_info.get('current_price', 0):,.2f}"
+            
+            stock_list.append({
+                "id": stock_id,
+                "name": stock_info.get('name', 'N/A'),
+                "acronym": stock_info.get('acronym', 'N/A'),
+                "price": formatted_price,
+                "benefit_available": stock_info.get('benefit_available', False)
+            })
+        
+        # Sort by acronym for readability
+        stock_list.sort(key=lambda x: x['acronym'])
+        return {"stocks": stock_list}
+        
     except Exception as e:
         return {"error": f"Data Parsing Error: Missing expected fields or unexpected structure. {e}"}
 
@@ -110,39 +110,56 @@ async def on_ready():
     print('Slash commands synced successfully.')
 
 
-@tree.command(name="tornstats", description="Look up a player's basic stats using their Torn API key.")
-@app_commands.describe(api_key="Your 16-character Torn City API key.")
-async def tornstats_command(interaction: discord.Interaction, api_key: str):
-    """Handles the /tornstats slash command."""
+@tree.command(name="stocks", description="Displays live stock prices from the Torn Stock Market.")
+@app_commands.describe(api_key="Your 16-character Torn City API key (required for API access).")
+async def torn_stocks_command(interaction: discord.Interaction, api_key: str):
+    """Handles the /stocks slash command."""
     
-    # Immediately acknowledge the command to prevent the "Application did not respond" error
+    # Immediately acknowledge the command
     await interaction.response.defer()
 
     # Get data from the Torn API
-    # strip() is important to remove accidental whitespace when users copy/paste keys
-    stats = get_torn_user_stats(api_key.strip()) 
+    stocks_data = get_torn_stock_data(api_key.strip()) 
 
-    if "error" in stats:
+    if "error" in stocks_data:
         # Send an error message if the API call failed
         error_embed = discord.Embed(
-            title=":x: Torn API Lookup Failed",
-            description=stats["error"],
+            title=":x: Torn Market Lookup Failed",
+            description=stocks_data["error"],
             color=discord.Color.red()
         )
-        error_embed.set_footer(text="The provided API key was invalid or did not have sufficient access.")
+        error_embed.set_footer(text="Check your API key and permissions. Example key: 1Wu5Br5fy7gbb7gU")
         await interaction.followup.send(embed=error_embed, ephemeral=True)
     else:
-        # Create an embedded message with the successful stats
+        stock_list = stocks_data['stocks']
+        
+        # Prepare the fields for the embed (max 25 fields per embed)
+        # We will split the list into three columns to be concise
+        field_value = []
+        
+        for stock in stock_list:
+            benefit_indicator = ":gem:" if stock['benefit_available'] else ""
+            field_value.append(
+                f"`{stock['acronym']:<4}` {stock['price']:>10} {benefit_indicator}"
+            )
+
+        # Create 3 columns by splitting the list
+        chunk_size = (len(field_value) + 2) // 3 # Calculate chunk size to ensure even distribution
+        chunks = [field_value[i:i + chunk_size] for i in range(0, len(field_value), chunk_size)]
+
         embed = discord.Embed(
-            title=f"Torn Player Stats: {stats['name']} [{stats['id']}]",
-            url=stats['profile_url'],
-            color=0xCC0000 # Torn City red color
+            title=":chart_with_upwards_trend: Torn City Live Stock Prices",
+            description=f"Current prices for {len(stock_list)} stocks. Benefit available stocks are marked with :gem:",
+            color=0x2ECC71
         )
         
-        embed.add_field(name=":chart_with_upwards_trend: Level", value=f"**{stats['level']}**", inline=True)
-        embed.add_field(name=":moneybag: Net Worth", value=f"**{stats['net_worth']}**", inline=True)
-        
-        embed.set_thumbnail(url="https://www.torn.com/images/v2/banner.png")
+        # Add the three columns as fields
+        embed.add_field(name="Acronym | Price", value="\n".join(chunks[0]), inline=True)
+        if len(chunks) > 1:
+            embed.add_field(name="\u200b", value="\n".join(chunks[1]), inline=True)
+        if len(chunks) > 2:
+            embed.add_field(name="\u200b", value="\n".join(chunks[2]), inline=True)
+
         embed.set_footer(text=f"Requested by {interaction.user.display_name} | Data via Torn API")
         
         # Send the final response
@@ -150,22 +167,20 @@ async def tornstats_command(interaction: discord.Interaction, api_key: str):
 
 
 # --- 4. Web Server for Hosting (Workaround for Render Web Service) ---
-# This server is only added to satisfy the Render Web Service requirement 
-# that an open port (10000) must be detected. It is NOT required for the bot itself.
 
 async def health_check(request):
     """Simple handler for health checks."""
     return web.Response(text="Bot is running.")
 
 async def start_web_server():
-    """Starts the aiohttp web server on port 10000."""
+    """Starts the aiohttp web server on the specified PORT."""
     app = web.Application()
     app.add_routes([web.get('/', health_check)])
-    # Use 0.0.0.0 to bind to all interfaces, and port 10000 as requested
+    # Use 0.0.0.0 to bind to all interfaces, and the dynamically set PORT
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 10000)
-    print("Starting web server on port 10000...")
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    print(f"Starting web server on port {PORT}...")
     await site.start()
     # Keep the task running indefinitely
     await asyncio.Future() 
