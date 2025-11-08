@@ -5,6 +5,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import time # Used for exponential backoff
+import asyncio # New: For running two async tasks concurrently (bot and web server)
+from aiohttp import web # New: To create a lightweight health check server
 
 # --- 1. Configuration and Setup (Using Environment Variables) ---
 # Discord Bot Token is read from the environment (e.g., set by Render/hosting)
@@ -16,8 +18,7 @@ intents = discord.Intents.default()
 # We need message_content intent to handle prefix commands, though we primarily use slash commands
 intents.message_content = True 
 bot = commands.Bot(command_prefix='!', intents=intents)
-# FIX: The commands.Bot class automatically initializes a command tree. We now reference 
-# the existing one (bot.tree) instead of creating a new one to resolve the ClientException.
+# FIX: Use the existing command tree attached to the bot instance.
 tree = bot.tree
 
 # --- 2. Torn API Interaction Logic with Rate Limiting ---
@@ -148,16 +149,53 @@ async def tornstats_command(interaction: discord.Interaction, api_key: str):
         await interaction.followup.send(embed=embed)
 
 
-# --- 4. Run the Bot ---
+# --- 4. Web Server for Hosting (Workaround for Render Web Service) ---
+# This server is only added to satisfy the Render Web Service requirement 
+# that an open port (10000) must be detected. It is NOT required for the bot itself.
 
-if __name__ == "__main__":
+async def health_check(request):
+    """Simple handler for health checks."""
+    return web.Response(text="Bot is running.")
+
+async def start_web_server():
+    """Starts the aiohttp web server on port 10000."""
+    app = web.Application()
+    app.add_routes([web.get('/', health_check)])
+    # Use 0.0.0.0 to bind to all interfaces, and port 10000 as requested
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    print("Starting web server on port 10000...")
+    await site.start()
+    # Keep the task running indefinitely
+    await asyncio.Future() 
+
+async def main():
+    """Runs the Discord bot and the web server concurrently."""
+    print("Starting bot application...")
+
     if not BOT_TOKEN:
         print("CRITICAL ERROR: BOT_TOKEN environment variable not found. Please set it in your hosting configuration.")
-    else:
-        try:
-            print("Starting Discord Bot...")
-            bot.run(BOT_TOKEN)
-        except discord.errors.LoginFailure:
-            print("CRITICAL ERROR: Invalid Discord Bot Token. Check the BOT_TOKEN environment variable.")
-        except Exception as e:
-            print(f"An unexpected error occurred during bot execution: {e}")
+        return
+
+    try:
+        # Create tasks for both the Discord bot and the web server
+        discord_task = bot.start(BOT_TOKEN)
+        web_server_task = start_web_server()
+        
+        # Run both concurrently
+        await asyncio.gather(discord_task, web_server_task)
+
+    except discord.errors.LoginFailure:
+        print("CRITICAL ERROR: Invalid Discord Bot Token. Check the BOT_TOKEN environment variable.")
+    except Exception as e:
+        print(f"An unexpected error occurred during bot execution: {e}")
+
+# --- 5. Run the Application ---
+
+if __name__ == "__main__":
+    # Run the main asynchronous function
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot and server stopped.")
